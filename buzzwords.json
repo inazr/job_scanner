@@ -1,0 +1,27 @@
+{
+  "_hinweis": "Buzzword-/Schlagwortliste für den Stellen-Filter. Eine Stelle gilt als Treffer, wenn EINES dieser Buzzwords im Titel ODER in der Beschreibung vorkommt (Groß-/Kleinschreibung egal). Begriffe einfach ergänzen/entfernen. Felder mit '_' Prefix werden ignoriert.",
+  "buzzwords": [
+    "dbt",
+    "analytics engineer",
+    "data engineer",
+    "data warehouse",
+    "semantic layer",
+    "bigquery",
+    "snowflake",
+    "databricks",
+    "airflow",
+    "dataform",
+    "looker",
+    "tableau",
+    "superset",
+    "preset",
+    "duckdb",
+    "gcp",
+    "data analyst",
+    "superset",
+    "data build tool",
+    "business analyst",
+    "dwh",
+    "data pipelines"
+  ]
+}

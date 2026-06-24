@@ -1,0 +1,35 @@
+{
+  "_hinweis": "Regionen für den --near-Filter. 'aktiv' = Standard-Region, wenn '--near' ohne Wert genutzt wird. Jede Region ist eine Liste von Orts-Begriffen (Substring-Match im Job-Standort, Groß-/Kleinschreibung egal). Remote-Stellen zählen IMMER als Treffer. Nutzung: 'scan_jobs.py --near' (Standard-Region) oder 'scan_jobs.py --near berlin'. Neue Region = einfach Eintrag ergänzen. Felder mit '_' Prefix werden ignoriert. nrw = die ~100 größten Städte (Quelle: Wikipedia, nach Einwohnerzahl) inkl. ae/oe/ue-Varianten + Exonyme.",
+  "aktiv": "nrw",
+  "regionen": {
+    "nrw": [
+      "nrw", "nordrhein", "north rhine", "rheinbach",
+      "köln", "cologne", "düsseldorf", "duesseldorf", "dusseldorf", "dortmund",
+      "essen", "duisburg", "bochum", "wuppertal", "bielefeld", "bonn",
+      "münster", "muenster", "mönchengladbach", "moenchengladbach", "gelsenkirchen",
+      "aachen", "krefeld", "oberhausen", "hagen", "hamm", "mülheim", "muelheim",
+      "leverkusen", "solingen", "herne", "paderborn", "neuss", "bottrop",
+      "recklinghausen", "remscheid", "bergisch gladbach", "siegen", "moers",
+      "gütersloh", "guetersloh", "arnsberg", "bergheim", "bocholt", "castrop-rauxel",
+      "detmold", "dinslaken", "dormagen", "dorsten", "düren", "dueren", "gladbeck",
+      "grevenbroich", "herford", "herten", "iserlohn", "kerpen", "lippstadt",
+      "lüdenscheid", "luedenscheid", "lünen", "luenen", "marl", "minden", "ratingen",
+      "rheine", "troisdorf", "unna", "velbert", "viersen", "wesel", "witten",
+      "ahlen", "alsdorf", "bad oeynhausen", "bad salzuflen", "beckum", "bergkamen",
+      "borken", "bornheim", "brühl", "bruehl", "bünde", "buende", "coesfeld",
+      "datteln", "delbrück", "delbrueck", "dülmen", "duelmen", "emmerich",
+      "emsdetten", "erftstadt", "erkelenz", "erkrath", "eschweiler", "euskirchen",
+      "frechen", "gummersbach", "hattingen", "hilden", "hürth", "huerth",
+      "ibbenbüren", "ibbenbueren", "jülich", "juelich", "kaarst", "kamen", "kempen",
+      "kleve", "königswinter", "koenigswinter", "langenfeld", "lemgo", "löhne",
+      "loehne", "meerbusch", "menden", "mettmann", "monheim", "nettetal", "oelde",
+      "petershagen", "pulheim", "sankt augustin", "schwerte", "soest", "stolberg",
+      "warendorf", "willich", "würselen", "wuerselen", "siegburg", "meckenheim"
+    ],
+    "hamburg": ["hamburg"],
+    "berlin": ["berlin"],
+    "münchen": ["münchen", "munich", "muenchen"],
+    "frankfurt": ["frankfurt", "rhein-main"],
+    "deutschland": ["germany", "deutschland", "dach"]
+  }
+}
