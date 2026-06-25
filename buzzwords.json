@@ -1,5 +1,5 @@
 {
-  "_hinweis": "Buzzword-/Schlagwortliste für den Stellen-Filter. Eine Stelle gilt als Treffer, wenn EINES dieser Buzzwords im Titel ODER in der Beschreibung vorkommt (Groß-/Kleinschreibung egal). Begriffe einfach ergänzen/entfernen. Felder mit '_' Prefix werden ignoriert.",
+  "_hinweis": "Buzzword-/Schlagwortliste für den Stellen-Filter. Eine Stelle gilt als Treffer, wenn EINES der 'buzzwords' im Titel ODER in der Beschreibung vorkommt (Groß-/Kleinschreibung egal). 'exclude' = Negativ-Worte: kommt eines davon im TITEL vor, wird die Stelle verworfen (auch wenn ein Buzzword passt). Begriffe einfach ergänzen/entfernen. Felder mit '_' Prefix werden ignoriert.",
   "buzzwords": [
     "dbt",
     "analytics engineer",
@@ -18,10 +18,23 @@
     "duckdb",
     "gcp",
     "data analyst",
-    "superset",
     "data build tool",
     "business analyst",
     "dwh",
     "data pipelines"
+  ],
+  "exclude": [
+    "werkstudent",
+    "working student",
+    "praktikum",
+    "praktikant",
+    "internship",
+    "ausbildung",
+    "azubi",
+    "trainee",
+    "duales studium",
+    "dual student",
+    "vertrieb",
+    "sales"
   ]
 }

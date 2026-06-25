@@ -22,8 +22,10 @@ import re
 import ssl
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -32,6 +34,11 @@ COMPANIES_FILE = HERE / "companies.json"
 BUZZWORDS_FILE = HERE / "buzzwords.json"
 LOCATIONS_FILE = HERE / "locations.json"
 OUTPUT_MD = HERE / "findings.md"
+SEEN_FILE = HERE / "seen.json"  # Zustand: schon einmal gesehene Stellen (für 🆕-Markierung)
+
+# Anzahl paralleler Feed-Abrufe. Stdlib-Threads reichen, da die Arbeit I/O-gebunden
+# ist (Warten auf HTTP). Moderat halten, um keine 429er zu provozieren.
+MAX_WORKERS = 8
 
 # Realistischer Browser-UA: manche Feeds (Ashby/Workable) sitzen hinter
 # Cloudflare und blocken untypische User-Agents mit 403.
@@ -51,6 +58,26 @@ DEFAULT_KEYWORDS = [
     "data platform",
     "data warehouse",
 ]
+
+# Negativ-Schlagworte: matcht eines davon im TITEL, wird die Stelle verworfen –
+# auch wenn ein Buzzword passt. Bewusst nur Titel (nicht Beschreibung), damit z.B.
+# "kein Praktikum"-Erwähnungen im Fließtext nicht fälschlich aussortieren.
+# Pflege in buzzwords.json unter "exclude"; hier nur der Fallback.
+DEFAULT_EXCLUDE = [
+    "werkstudent", "working student", "praktikum", "praktikant", "intern ",
+    "internship", "ausbildung", "azubi", "trainee", "vertrieb", "sales",
+    "(junior)", "duales studium", "dual student",
+]
+
+# Discovery via Bundesagentur für Arbeit (öffentliche Jobsuche-API). Anders als die
+# ATS-Feeds ist das eine Volltext-Suche über ALLE gemeldeten Stellen – findet damit
+# auch Firmen, die (noch) nicht in companies.json stehen. Der API-Key ist der
+# öffentlich dokumentierte Schlüssel der Jobsuche.
+ARBEITSAGENTUR_API = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs"
+ARBEITSAGENTUR_KEY = "jobboerse-jobsuche"
+# Default-Suchbegriffe für --discover. Die API-Suche ist unscharf (liefert auch
+# Unpassendes); die Treffer laufen anschließend durch den normalen Buzzword-Filter.
+DEFAULT_DISCOVER_QUERIES = ["analytics engineer", "data engineer", "data platform", "dbt"]
 
 # Für --near: Stelle gilt als regional passend, wenn Ort einen dieser
 # Begriffe enthält ODER die Stelle als Remote markiert ist.
@@ -339,6 +366,28 @@ def fetch_smartrecruiters(name, slug):
     return jobs
 
 
+def fetch_recruitee(name, slug):
+    data = _get_json(f"https://{slug}.recruitee.com/api/offers/")
+    jobs = []
+    for j in data.get("offers", []):
+        ort = j.get("location") or ", ".join(
+            x for x in (j.get("city"), j.get("country")) if x
+        )
+        jobs.append({
+            "firma": name,
+            "titel": j.get("title", ""),
+            "ort": ort,
+            "remote": bool(j.get("remote")) or bool(j.get("hybrid")) or "remote" in ort.lower(),
+            "link": j.get("careers_url") or j.get("careers_apply_url", ""),
+            "datum": _iso_to_date(j.get("published_at") or j.get("created_at")),
+            "plattform": "recruitee",
+            "beschreibung": _strip_html(
+                j.get("description"), j.get("requirements"), _sr_label(j.get("department")),
+            ),
+        })
+    return jobs
+
+
 FETCHERS = {
     "personio": fetch_personio,
     "ashby": fetch_ashby,
@@ -346,7 +395,53 @@ FETCHERS = {
     "workable": fetch_workable,
     "greenhouse": fetch_greenhouse,
     "smartrecruiters": fetch_smartrecruiters,
+    "recruitee": fetch_recruitee,
 }
+
+
+# ── Discovery-Quelle (query-basiert, nicht firmenzentrisch) ──────────────────
+def fetch_arbeitsagentur(query, ort, umkreis, max_seiten=5):
+    """Bundesagentur-Jobsuche nach einem Suchbegriff im Umkreis eines Orts.
+
+    Liefert normalisierte Stellen (ohne Beschreibungstext – die Liste enthält nur
+    Metadaten, daher Matching nur über den Titel, analog SmartRecruiters)."""
+    jobs = []
+    seen_refs = set()
+    for seite in range(1, max_seiten + 1):
+        params = urllib.parse.urlencode({
+            "was": query, "wo": ort, "umkreis": umkreis, "size": 100, "page": seite,
+        })
+        req = urllib.request.Request(
+            f"{ARBEITSAGENTUR_API}?{params}",
+            headers={"User-Agent": USER_AGENT, "X-API-Key": ARBEITSAGENTUR_KEY,
+                     "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        angebote = data.get("stellenangebote", []) or []
+        if not angebote:
+            break
+        for s in angebote:
+            ref = s.get("refnr", "")
+            if not ref or ref in seen_refs:
+                continue
+            seen_refs.add(ref)
+            ao = s.get("arbeitsort") or {}
+            ort_str = ", ".join(x for x in (ao.get("ort"), ao.get("region")) if x)
+            jobs.append({
+                "firma": s.get("arbeitgeber", "") or "?",
+                "titel": s.get("titel") or s.get("beruf", ""),
+                "ort": ort_str,
+                "remote": False,  # API kennzeichnet Remote nicht zuverlässig
+                "link": "https://www.arbeitsagentur.de/jobsuche/jobdetail/"
+                        + urllib.parse.quote(ref, safe=""),
+                "datum": _iso_to_date(s.get("aktuelleVeroeffentlichungsdatum")),
+                "plattform": "arbeitsagentur",
+                "beschreibung": "",  # Liste liefert keinen Volltext
+            })
+        if len(angebote) < 100:
+            break
+    return jobs
 
 
 # ── Filter ───────────────────────────────────────────────────────────────────
@@ -368,6 +463,61 @@ def matched_keywords(job, keywords):
     """Liste der Schlagworte, die in Titel ODER Beschreibung vorkommen."""
     haystack = (job["titel"] + " " + job.get("beschreibung", "")).lower()
     return [kw for kw in keywords if kw.lower() in haystack]
+
+
+def load_excludes(args):
+    """Negativ-Schlagworte aus CLI (--exclude), sonst buzzwords.json ('exclude'),
+    sonst Default. Leere Liste (--no-exclude) schaltet den Filter ab."""
+    if getattr(args, "no_exclude", False):
+        return []
+    if args.exclude:
+        return args.exclude
+    try:
+        data = json.loads(BUZZWORDS_FILE.read_text(encoding="utf-8"))
+        worte = [w for w in data.get("exclude", []) if w]
+        if worte:
+            return worte
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return DEFAULT_EXCLUDE
+
+
+def is_excluded(job, excludes):
+    """True, wenn ein Negativ-Schlagwort im TITEL vorkommt (Beschreibung bewusst nicht)."""
+    titel = job["titel"].lower()
+    return any(x.lower() in titel for x in excludes)
+
+
+# ── Zustand: schon gesehene Stellen (für 🆕 „neu seit letztem Lauf") ──────────
+def job_key(job):
+    """Stabiler Schlüssel je Stelle. Link bevorzugt (eindeutig); sonst Fallback
+    auf Firma|Titel|Ort, damit linklose Treffer trotzdem wiedererkannt werden."""
+    return (job.get("link") or f"{job['firma']}|{job['titel']}|{job['ort']}").strip().lower()
+
+
+def load_seen():
+    """Gesehene Stellen laden → {key: erstes_sichtungsdatum}."""
+    try:
+        return json.loads(SEEN_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_seen(seen):
+    SEEN_FILE.write_text(json.dumps(seen, ensure_ascii=False, indent=0) + "\n", encoding="utf-8")
+
+
+def dedupe(jobs):
+    """Stellen über alle Quellen hinweg per job_key entfalten (erste gewinnt).
+    Discovery (Arbeitsagentur) und ATS-Feed können dieselbe Stelle liefern."""
+    gesehen, raus = set(), []
+    for j in jobs:
+        k = job_key(j)
+        if k in gesehen:
+            continue
+        gesehen.add(k)
+        raus.append(j)
+    return raus
 
 
 def load_regionen():
@@ -442,11 +592,12 @@ def print_table(jobs):
         ("ort", "Ort", 20),
     ]
     # Link als letzte Spalte ohne Padding → bleibt im Terminal klickbar.
-    header = "  ".join(h.ljust(w) for _, h, w in cols) + "  Rem  Link"
+    header = "Neu  " + "  ".join(h.ljust(w) for _, h, w in cols) + "  Rem  Link"
     print(header)
     print("-" * (len(header) + 30))
     for j in jobs:
-        line = "  ".join(str(j[k])[:w].ljust(w) for k, _, w in cols)
+        line = ("🆕  " if j.get("neu") else "    ")
+        line += "  ".join(str(j[k])[:w].ljust(w) for k, _, w in cols)
         line += "  " + ("✓  " if j["remote"] else "   ") + j["link"]
         print(line)
 
@@ -462,19 +613,69 @@ def write_markdown(jobs, args):
         + (f" · Region: {args.aktive_region} + Remote" if getattr(args, "aktive_region", None) else "")
         + "*",
         "",
-        "| Firma | Titel | Ort | Remote | Schlagworte | Plattform | Datum | Link |",
-        "|---|---|---|:---:|---|---|---|---|",
+        "| Neu | Firma | Titel | Ort | Remote | Schlagworte | Plattform | Datum | Link |",
+        "|:---:|---|---|---|:---:|---|---|---|---|",
     ]
     for j in jobs:
+        neu = "🆕" if j.get("neu") else ""
         rem = "✓" if j["remote"] else ""
         link = f"[öffnen]({j['link']})" if j["link"] else ""
         titel = j["titel"].replace("|", "\\|")
         schlagworte = ", ".join(j.get("treffer_worte", []))
         lines.append(
-            f"| {j['firma']} | {titel} | {j['ort']} | {rem} | {schlagworte} | "
+            f"| {neu} | {j['firma']} | {titel} | {j['ort']} | {rem} | {schlagworte} | "
             f"{j['plattform']} | {j['datum']} | {link} |"
         )
     OUTPUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ── Feed-Abruf (parallel) ─────────────────────────────────────────────────────
+def _scan_company(f):
+    """Eine Firma abrufen. Gibt (status, name, info, jobs) zurück; wirft nie –
+    eine kaputte Firma darf den (parallelen) Lauf nicht stoppen."""
+    name, platform, slug = f.get("name"), f.get("platform"), f.get("slug")
+    if not platform or not slug:
+        return ("skip", name, f'kein Slug – auflösen mit  python3 find_slug.py "{name}"', [])
+    fetcher = FETCHERS.get(platform)
+    if not fetcher:
+        return ("skip", name, f"unbekannte Plattform '{platform}'", [])
+    try:
+        jobs = fetcher(name, slug)
+        return ("ok", name, f"{len(jobs):>3} Stellen ({platform})", jobs)
+    except Exception as e:  # bewusst breit
+        return ("err", name, f"Fehler: {e} ({platform}/{slug})", [])
+
+
+def scan_feeds(firmen):
+    """Alle Firmen-Feeds parallel abrufen (I/O-gebunden → Threads)."""
+    alle_jobs = []
+    print(f"Scanne {len(firmen)} Firmen (parallel, {MAX_WORKERS} Worker) …\n", file=sys.stderr)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        for status, name, info, jobs in pool.map(_scan_company, firmen):
+            marker = {"ok": "✓", "skip": "⚠", "err": "✗"}[status]
+            print(f"  {marker} {str(name):18} {info}", file=sys.stderr)
+            alle_jobs.extend(jobs)
+    return alle_jobs
+
+
+def discover_arbeitsagentur(queries, ort, umkreis):
+    """Discovery-Suche über die Bundesagentur, je Suchbegriff parallel."""
+    alle_jobs = []
+    print(f"\nDiscovery (Arbeitsagentur): {len(queries)} Suchbegriffe um '{ort}' "
+          f"(+{umkreis} km) …", file=sys.stderr)
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(queries) or 1)) as pool:
+        def one(q):
+            try:
+                return q, fetch_arbeitsagentur(q, ort, umkreis), None
+            except Exception as e:
+                return q, [], e
+        for q, jobs, err in pool.map(one, queries):
+            if err:
+                print(f"  ✗ '{q}': {err}", file=sys.stderr)
+            else:
+                print(f"  ✓ '{q}': {len(jobs):>3} Stellen", file=sys.stderr)
+                alle_jobs.extend(jobs)
+    return alle_jobs
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -490,37 +691,41 @@ def main():
                     help="nur Stellen der letzten N Tage (Standard 60; 0 = ohne Altersfilter)")
     ap.add_argument("--keyword", action="append", default=[],
                     help="Schlagwort (mehrfach nutzbar); überschreibt buzzwords.json")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="Negativ-Schlagwort im Titel (mehrfach); überschreibt buzzwords.json")
+    ap.add_argument("--no-exclude", action="store_true", help="Negativ-Filter abschalten")
+    ap.add_argument("--discover", action="store_true",
+                    help="zusätzlich die Bundesagentur-Jobsuche anzapfen (findet auch "
+                         "Firmen außerhalb companies.json)")
+    ap.add_argument("--discover-ort", default="Bonn", metavar="ORT",
+                    help="Zentrum der Discovery-Umkreissuche (Standard: Bonn)")
+    ap.add_argument("--discover-umkreis", type=int, default=50, metavar="KM",
+                    help="Radius der Discovery-Suche in km (Standard: 50)")
+    ap.add_argument("--discover-query", action="append", default=[], metavar="Q",
+                    help="Suchbegriff für --discover (mehrfach); Standard: Data/Analytics-Rollen")
+    ap.add_argument("--no-state", action="store_true",
+                    help="seen.json weder lesen noch schreiben (keine 🆕-Markierung)")
     ap.add_argument("--companies", default=str(COMPANIES_FILE), help="Pfad zur companies.json")
     args = ap.parse_args()
 
     keywords = load_keywords(args)
+    excludes = load_excludes(args)
 
     firmen = json.loads(Path(args.companies).read_text(encoding="utf-8")).get("firmen", [])
 
-    alle_jobs = []
-    print(f"Scanne {len(firmen)} Firmen …\n", file=sys.stderr)
-    for f in firmen:
-        name, platform, slug = f.get("name"), f.get("platform"), f.get("slug")
-        if not platform or not slug:
-            print(f'  ⚠ {name}: kein Slug – auflösen mit  python3 find_slug.py "{name}"',
-                  file=sys.stderr)
-            continue
-        fetcher = FETCHERS.get(platform)
-        if not fetcher:
-            print(f"  ⚠ {name}: unbekannte Plattform '{platform}'", file=sys.stderr)
-            continue
-        try:
-            jobs = fetcher(name, slug)
-            alle_jobs.extend(jobs)
-            print(f"  ✓ {name:18} {len(jobs):>3} Stellen ({platform})", file=sys.stderr)
-        except Exception as e:  # bewusst breit: eine Firma soll den Lauf nicht stoppen
-            print(f"  ✗ {name:18} Fehler: {e} ({platform}/{slug})", file=sys.stderr)
+    alle_jobs = scan_feeds(firmen)
+    if args.discover:
+        queries = args.discover_query or DEFAULT_DISCOVER_QUERIES
+        alle_jobs.extend(discover_arbeitsagentur(queries, args.discover_ort, args.discover_umkreis))
 
     # Treffer-Schlagworte erfassen; ohne Treffer wird (außer bei --all) gefiltert.
     for j in alle_jobs:
         j["treffer_worte"] = matched_keywords(j, keywords)
 
     treffer = alle_jobs if args.all else [j for j in alle_jobs if j["treffer_worte"]]
+    # Negativ-Filter: Stellen mit Ausschluss-Wort im Titel raus (außer --no-exclude).
+    if excludes:
+        treffer = [j for j in treffer if not is_excluded(j, excludes)]
     # Altersfilter: nur Stellen der letzten N Tage (Standard 60; --days 0 = aus).
     if args.days > 0:
         heute = date.today()
@@ -540,10 +745,27 @@ def main():
         args.aktive_region = region
         treffer = [j for j in treffer if matches_regio(j, terms)]
 
+    # Mehrfach gelistete Stellen (z.B. ATS-Feed + Arbeitsagentur) entfalten.
+    treffer = dedupe(treffer)
+
+    # Zustand: neue Stellen markieren und Sichtungen fortschreiben (außer --no-state).
+    neu_count = 0
+    if not args.no_state:
+        seen = load_seen()
+        heute_iso = date.today().isoformat()
+        for j in treffer:
+            k = job_key(j)
+            j["neu"] = k not in seen
+            if j["neu"]:
+                neu_count += 1
+            seen.setdefault(k, heute_iso)
+        save_seen(seen)
+
     # Reihenfolge = Scan-Lauf (companies.json-Reihenfolge × Stellen je Feed),
     # bewusst NICHT alphabetisch sortiert.
 
-    print(f"\n{len(treffer)} Treffer von {len(alle_jobs)} Stellen gesamt:\n", file=sys.stderr)
+    print(f"\n{len(treffer)} Treffer ({neu_count} 🆕 neu) von {len(alle_jobs)} Stellen gesamt:\n",
+          file=sys.stderr)
     print_table(treffer)
     write_markdown(treffer, args)
     print(f"\n→ Markdown geschrieben: {OUTPUT_MD}", file=sys.stderr)

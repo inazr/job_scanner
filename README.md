@@ -8,7 +8,11 @@ der zu einem Firmennamen automatisch das Job-Board (platform + slug) findet.
 `python3` aufrufen (nicht `python`).
 
 Unterstützte Plattformen: **Personio** (XML), **Ashby**, **Lever**, **Workable**,
-**Greenhouse**, **SmartRecruiters** (JSON).
+**Greenhouse**, **SmartRecruiters**, **Recruitee** (JSON).
+
+Zusätzlich **Discovery** über die öffentliche **Bundesagentur-Jobsuche** (`--discover`):
+eine Volltext-Umkreissuche, die auch passende Stellen bei Firmen findet, die *nicht*
+in `companies.json` stehen (eigene Karriereseiten, große Konzerne usw.).
 
 ---
 
@@ -30,9 +34,10 @@ python3 find_slug.py "Firmenname"    # Board einer Firma finden + eintragen
 | `scan_jobs.py` | Scanner: Feeds abrufen, filtern, `findings.md` schreiben (rein lesend für die Configs). |
 | `find_slug.py` | Findet `platform` + `slug` zu einem Firmennamen und trägt sie in `companies.json` ein. |
 | `companies.json` | Firmenliste (`name` + `platform` + `slug`; Einträge dürfen **name-only** sein). NRW-Firmen oben → bestimmen die Reihenfolge in `findings.md`. |
-| `buzzwords.json` | Filter-Schlagworte (Titel **und** Beschreibung). |
+| `buzzwords.json` | Filter-Schlagworte (`buzzwords` = Treffer in Titel/Beschreibung; `exclude` = Negativ-Worte im Titel). |
 | `locations.json` | Benannte Regionen für `--near`. |
 | `findings.md` | Ausgabe (wird bei jedem Lauf **überschrieben**, nicht angehängt). |
+| `seen.json` | Zustand: schon gesehene Stellen (Link → erstes Sichtungsdatum). Steuert die 🆕-Markierung; wird automatisch angelegt/fortgeschrieben. |
 
 ---
 
@@ -46,14 +51,26 @@ python3 find_slug.py "Firmenname"    # Board einer Firma finden + eintragen
 | `--worldwide` | aus | Geo-Filter **abschalten** (auch Jobs außerhalb Europas / nicht-remote im Ausland). |
 | `--days N` | `60` | Nur Stellen der letzten **N Tage**. `--days 0` = ohne Altersfilter. |
 | `--keyword KW` | – | Schlagwort setzen (mehrfach nutzbar); **überschreibt** `buzzwords.json` für diesen Lauf. |
+| `--exclude KW` | – | Negativ-Schlagwort im **Titel** (mehrfach); **überschreibt** `exclude` aus `buzzwords.json`. |
+| `--no-exclude` | aus | Negativ-Filter komplett abschalten. |
+| `--discover` | aus | Zusätzlich die **Bundesagentur-Jobsuche** anzapfen (findet Firmen außerhalb `companies.json`). |
+| `--discover-ort ORT` | `Bonn` | Zentrum der Discovery-Umkreissuche. |
+| `--discover-umkreis KM` | `50` | Radius der Discovery-Suche in km. |
+| `--discover-query Q` | Data/Analytics-Rollen | Suchbegriff für `--discover` (mehrfach); Default sind gängige Data-Rollen. |
+| `--no-state` | aus | `seen.json` weder lesen noch schreiben (keine 🆕-Markierung). |
 | `--companies PFAD` | `companies.json` | Andere Firmenliste verwenden. |
 
 ### Was standardmäßig (ohne Flags) gefiltert wird
 1. **Schlagworte** – Treffer, wenn ein Begriff aus `buzzwords.json` im Titel **oder** der Beschreibung steht (Teilstring, Groß-/Kleinschreibung egal). Mit `--all` aus.
-2. **Geo** – nur **Europa** UND (**Deutschland** ODER **Remote**). Mit `--worldwide` aus.
-3. **Alter** – nur Stellen ≤ `--days` Tage (Default 60). Stellen ohne Datum bleiben drin.
+2. **Negativ-Worte** – Stellen mit einem `exclude`-Begriff im **Titel** (z.B. *Werkstudent*, *Praktikum*, *Vertrieb*) fliegen raus. Mit `--no-exclude` aus.
+3. **Geo** – nur **Europa** UND (**Deutschland** ODER **Remote**). Mit `--worldwide` aus.
+4. **Alter** – nur Stellen ≤ `--days` Tage (Default 60). Stellen ohne Datum bleiben drin.
 
-Reihenfolge in `findings.md` = Reihenfolge in `companies.json` (NRW zuerst), Stellen je Firma in Feed-Reihenfolge. Der Kopf der Datei zeigt die aktiven Filter.
+Stellen, die seit dem letzten Lauf **neu** dazugekommen sind, werden mit 🆕 markiert
+(Zustand in `seen.json`). Reihenfolge in `findings.md` = Reihenfolge in
+`companies.json` (NRW zuerst) gefolgt von Discovery-Treffern, Stellen je Firma in
+Feed-Reihenfolge. Der Kopf der Datei zeigt die aktiven Filter. Die Feeds werden
+**parallel** abgerufen (schneller Lauf auch bei vielen Firmen).
 
 ### Beispiele
 ```bash
@@ -63,6 +80,8 @@ python3 scan_jobs.py --near hamburg --days 14  # Hamburg/Remote, max. 14 Tage al
 python3 scan_jobs.py --all --days 0            # wirklich alles, ohne Titel-/Altersfilter
 python3 scan_jobs.py --keyword dbt --keyword "data platform"   # eigene Schlagworte
 python3 scan_jobs.py --worldwide               # auch Ausland/nicht-remote
+python3 scan_jobs.py --discover --near nrw     # zusätzlich Bundesagentur (Umkreis Bonn) anzapfen
+python3 scan_jobs.py --discover --discover-ort Köln --discover-umkreis 30   # Discovery enger fassen
 ```
 
 ---
@@ -91,7 +110,7 @@ python3 find_slug.py --yes                 # alle name-only auflösen, ohne Rüc
 
 ### Wie der Slug gefunden wird
 1. **Raten** – Slug-Kandidaten aus dem Namen (inkl. untypischer Formen wie
-   `firma.com`, `firma-`, `firmagmbh`), gegen alle 6 Feeds getestet.
+   `firma.com`, `firma-`, `firmagmbh`), gegen alle 7 Feeds getestet.
 2. **Websuche** (nur falls Raten leer) – best-effort; aus manchen Umgebungen
    geblockt → dann Meldung „Websuche blockiert", Slug manuell suchen.
 
@@ -112,8 +131,8 @@ interaktiv siehst du die Warnung und entscheidest selbst.
 
 ### `companies.json` – Firmen
 Neue Firma = ein Eintrag. `platform` ∈ `personio | ashby | lever | workable |
-greenhouse | smartrecruiters`. Du kannst auch **nur den Namen** eintragen und
-`find_slug.py` den Rest ergänzen lassen:
+greenhouse | smartrecruiters | recruitee`. Du kannst auch **nur den Namen**
+eintragen und `find_slug.py` den Rest ergänzen lassen:
 
 ```json
 { "name": "Beispiel GmbH" }
@@ -131,13 +150,20 @@ Felder mit `_`-Prefix (`_ort`, `_quelle`, `_hinweis`) werden ignoriert.
 | workable | `https://apply.workable.com/SLUG/...` | `hero-software` |
 | greenhouse | `https://boards.greenhouse.io/SLUG/...` | `stripe` |
 | smartrecruiters | `https://jobs.smartrecruiters.com/SLUG/...` | `redcare-pharmacy` |
+| recruitee | `https://SLUG.recruitee.com/...` | `bunq` |
 
 ### `buzzwords.json` – Filter-Begriffe
 ```json
-{ "buzzwords": ["dbt", "analytics engineer", "data engineer", "..."] }
+{
+  "buzzwords": ["dbt", "analytics engineer", "data engineer", "..."],
+  "exclude":   ["werkstudent", "praktikum", "vertrieb", "..."]
+}
 ```
-Teilstring-Match (kein Wortgrenzen-Check): `sql` matcht auch „PostgreSQL".
-Per CLI temporär überschreiben: `--keyword …`.
+`buzzwords` = Treffer, wenn einer im Titel **oder** der Beschreibung steht.
+`exclude` = Negativ-Worte: kommt eines im **Titel** vor, wird die Stelle verworfen
+(auch wenn ein Buzzword passt). Beides Teilstring-Match ohne Wortgrenzen-Check
+(`sql` matcht auch „PostgreSQL"). Per CLI temporär überschreiben: `--keyword …`
+bzw. `--exclude …` (oder `--no-exclude`).
 
 ### `locations.json` – Regionen für `--near`
 ```json

@@ -3,7 +3,7 @@
 Slug-Finder: ergänzt zu einem Firmennamen automatisch platform + slug.
 
 Strategie (zweistufig):
-  1. RATEN  – Slug-Kandidaten aus dem Namen bilden und alle 4 Plattform-Feeds
+  1. RATEN  – Slug-Kandidaten aus dem Namen bilden und alle Plattform-Feeds
              testen. Ein Kandidat gilt nur als Treffer, wenn der Feed echte
              Stellen liefert (die Fetcher aus scan_jobs.py sind die Verifikation).
   2. SUCHE  – nur falls Raten nichts findet: DuckDuckGo nach der Karriereseite
@@ -46,6 +46,7 @@ PATTERNS = [
     (r"(?:job-)?boards\.greenhouse\.io/(?:embed/job_board\?for=)?([a-z0-9][a-z0-9-]*)", "greenhouse"),
     (r"api\.smartrecruiters\.com/v1/companies/([a-z0-9][a-z0-9-]*)", "smartrecruiters"),
     (r"jobs\.smartrecruiters\.com/([a-z0-9][a-z0-9-]*)", "smartrecruiters"),
+    (r"([a-z0-9][a-z0-9-]*)\.recruitee\.com", "recruitee"),
 ]
 
 # Pfad-/Subdomain-Segmente, die nie ein Firmen-Slug sind.
